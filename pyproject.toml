@@ -3,7 +3,26 @@ name = "browser-use"
 description = "Automated flight booking agent built on Playwright"
 authors = [{ name = "Gregor Zunic" }]
 version = "0.9.4"
-readme = "README.md"
+readme = { text = """
+# Browser Agent
+
+An automated flight booking agent built with Playwright and Pydantic. The
+project demonstrates orchestrating browser automation with structured LLM
+reasoning to search for flights, compare itineraries, and finalize bookings.
+
+## Getting Started
+
+Create a virtual environment with `uv`, install dependencies, and run the demo
+script:
+
+```bash
+uv venv --python 3.11
+source .venv/bin/activate
+uv sync
+
+uv run flight_booking_demo.py
+```
+""", content-type = "text/markdown" }
 requires-python = ">=3.11,<4.0"
 dependencies = [
     "playwright>=1.40.0",
