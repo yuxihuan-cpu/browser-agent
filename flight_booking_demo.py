@@ -1,4 +1,7 @@
 """Simple entry point for the flight booking automation demo."""
+from dotenv import load_dotenv
+
+load_dotenv()
 
 import asyncio
 from datetime import date

@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 import json
+import asyncio
 from typing import Any, Dict, List, Optional
 
 from pydantic import ValidationError
@@ -30,6 +31,8 @@ class FlightBookingAgent:
         temperature: float = 0.0,
         max_steps: int = 50,
         search_engine: str = "skyscanner",
+        auto_accept_cookies: bool = True,
+        cookie_strategy: str = "accept_all",
     ) -> None:
         try:
             if isinstance(booking_request, BookingRequest):
@@ -44,6 +47,7 @@ class FlightBookingAgent:
             temperature=temperature,
             max_tokens=4000,
             request_timeout=60,
+            model_kwargs={"response_format": {"type": "json_object"}}
         )
 
         self.browser = Browser(
@@ -67,6 +71,10 @@ class FlightBookingAgent:
         self.should_stop = False
         self.stop_reason: Optional[str] = None
 
+        self.auto_accept_cookies = auto_accept_cookies
+        self.cookie_strategy = cookie_strategy
+        self.cookie_handled = False
+
     def _register_flight_tools(self) -> None:
         from browser_use.tools.flight_tools import (
             fill_passenger_form,
@@ -80,16 +88,75 @@ class FlightBookingAgent:
         self.controller.register_tool(verify_booking_summary)
         self.controller.register_tool(freeze_at_payment)
 
-    async def run(self) -> Dict[str, Any]:
-        """Execute the booking workflow."""
+    async def _auto_handle_cookies(self) -> bool:
+        """Automatically handle cookie consent popups if enabled."""
+        if not self.auto_accept_cookies or self.cookie_handled:
+            return False
 
+        try:
+            page = self.browser.page
+            if not page:
+                return False
+
+            # Wait a bit for popup to appear
+            await asyncio.sleep(1)
+
+            # Common cookie consent selectors
+            cookie_selectors = {
+                "accept_all": [
+                    "button:has-text('Accept all')",
+                    "button:has-text('Accept All')",
+                    "button:has-text('Accept cookies')",
+                    "button[id*='accept']",
+                    "button[class*='accept-all']",
+                    "#onetrust-accept-btn-handler",
+                    ".cookie-accept-all",
+                ],
+                "accept_essential": [
+                    "button:has-text('Accept essential')",
+                    "button:has-text('Essential only')",
+                    "button:has-text('Reject all')",
+                    "button[class*='essential']",
+                ],
+            }
+
+            # Get appropriate selectors based on strategy
+            selectors = cookie_selectors.get(self.cookie_strategy, cookie_selectors["accept_all"])
+
+            # Try each selector
+            for selector in selectors:
+                try:
+                    button = await page.query_selector(selector)
+                    if button:
+                        await button.click()
+                        print(f"✓ Automatically accepted cookies using: {selector}")
+                        self.cookie_handled = True
+                        await asyncio.sleep(1)  # Wait for popup to close
+                        return True
+                except Exception:
+                    continue
+
+            return False
+
+        except Exception as exc:
+            print(f"Cookie auto-handler failed: {exc}")
+            return False
+
+    async def run(self) -> Dict[str, Any]:
         try:
             await self._initialize()
 
+            if self.auto_accept_cookies:
+                await self._auto_handle_cookies()
+
             while self.current_step < self.max_steps and not self.should_stop:
                 self.current_step += 1
+                print(f"\n--- Step {self.current_step} ---")  # ADD THIS
 
                 page_state = await self._get_page_state()
+
+                if self.auto_accept_cookies and not self.cookie_handled:
+                    await self._auto_handle_cookies()
 
                 if self._is_looping():
                     await self._handle_loop_detection()
@@ -97,10 +164,15 @@ class FlightBookingAgent:
                 messages = self._build_messages(page_state)
 
                 try:
+                    print("Calling LLM...")  # ADD THIS
                     response = await self.llm.ainvoke(messages)
+                    print(f"LLM Response: {response.content[:200]}")  # ADD THIS
+
                     action = self._parse_llm_response(response)
-                except Exception as exc:  # pragma: no cover - LLM/runtime errors
-                    raise RuntimeError(f"LLM call failed at step {self.current_step}: {exc}") from exc
+                    print(f"Parsed action: {action}")  # ADD THIS
+                except Exception as exc:
+                    print(f"ERROR: {exc}")  # ADD THIS
+                    raise
 
                 if self._should_stop_execution(action):
                     break
