@@ -1,31 +1,133 @@
-from typing import Any, Dict
+from __future__ import annotations
 
+import re
+from typing import Any, Dict, List, Optional
+
+from pydantic import BaseModel, Field
 from playwright.async_api import Page
 
 from browser_use.controller.service import Tool
 
 
-@Tool()
-async def handle_cookie_consent(page: Page) -> str:
-    """Automatically handle cookie consent popups on flight booking sites."""
+class CookieConsentOptions(BaseModel):
+    """Configuration options for handling cookie consent dialogs."""
 
-    selectors = [
-        'button:has-text("Accept")',
+    preferred_actions: List[str] = Field(
+        default_factory=lambda: ["accept_all", "accept", "agree"]
+    )
+    custom_selectors: Dict[str, List[str]] = Field(default_factory=dict)
+    custom_text_matches: Dict[str, List[str]] = Field(default_factory=dict)
+    timeout_ms: int = 2000
+
+
+DEFAULT_SELECTOR_MAP: Dict[str, List[str]] = {
+    "accept_all": [
+        'button:has-text("Accept All")',
         'button:has-text("Accept all")',
-        'button:has-text("Agree")',
+        'button:has-text("Accept All Cookies")',
+        'button:has-text("Accept all cookies")',
+        'button:has-text("Accept and close")',
+        'button[data-testid*="accept-all"]',
+        'button[aria-label*="Accept all"]',
+        'button[id*="accept-all"]',
         'button[id*="accept"]',
+        'button[class*="accept-all"]',
         'button[class*="accept"]',
         '#onetrust-accept-btn-handler',
         '.cookie-accept',
         '[data-testid="cookie-accept"]',
-    ]
+    ],
+    "accept": [
+        'button:has-text("Accept")',
+        'button:has-text("Allow")',
+        'button:has-text("Allow all")',
+        'button:has-text("Yes, accept")',
+        'button:has-text("I accept")',
+        'button:has-text("I agree")',
+        'button:has-text("Got it")',
+    ],
+    "agree": [
+        'button:has-text("Agree")',
+        'button:has-text("Agree and continue")',
+    ],
+}
 
+
+DEFAULT_TEXT_MATCHES: Dict[str, List[str]] = {
+    "accept_all": [
+        r"accept all",
+        r"accept all cookies",
+        r"allow all",
+    ],
+    "accept": [
+        r"accept",
+        r"allow",
+        r"yes,? accept",
+        r"i accept",
+        r"i agree",
+    ],
+    "agree": [
+        r"agree",
+        r"consent",
+    ],
+}
+
+
+async def _click_selectors(page: Page, selectors: List[str], timeout: int) -> Optional[str]:
     for selector in selectors:
         try:
-            await page.click(selector, timeout=2000)
-            return f"✓ Cookie consent handled: {selector}"
+            await page.click(selector, timeout=timeout)
+            return selector
         except Exception:
             continue
+    return None
+
+
+async def _click_by_text(page: Page, patterns: List[str], timeout: int) -> Optional[str]:
+    for pattern in patterns:
+        try:
+            await page.get_by_role("button", name=re.compile(pattern, re.IGNORECASE)).click(
+                timeout=timeout
+            )
+            return f"role=button[name~/{pattern}/i]"
+        except Exception:
+            continue
+    return None
+
+
+@Tool()
+async def handle_cookie_consent(
+    page: Page, options: Optional[CookieConsentOptions | Dict[str, Any]] = None
+) -> str:
+    """Automatically handle cookie consent popups with configurable options."""
+
+    if options is None:
+        options_model = CookieConsentOptions()
+    elif isinstance(options, CookieConsentOptions):
+        options_model = options
+    elif isinstance(options, dict):
+        options_model = CookieConsentOptions(**options)
+    else:  # pragma: no cover - defensive branch
+        raise TypeError("options must be a CookieConsentOptions or mapping")
+
+    for action in options_model.preferred_actions:
+        selectors = list(DEFAULT_SELECTOR_MAP.get(action, []))
+        selectors.extend(options_model.custom_selectors.get(action, []))
+
+        clicked_selector = await _click_selectors(
+            page, selectors, timeout=options_model.timeout_ms
+        )
+        if clicked_selector:
+            return f"✓ Cookie consent handled via '{action}': {clicked_selector}"
+
+        text_patterns = list(DEFAULT_TEXT_MATCHES.get(action, []))
+        text_patterns.extend(options_model.custom_text_matches.get(action, []))
+
+        clicked_text = await _click_by_text(
+            page, text_patterns, timeout=options_model.timeout_ms
+        )
+        if clicked_text:
+            return f"✓ Cookie consent handled via '{action}': {clicked_text}"
 
     return "No cookie popup found or already handled"
 
