@@ -1,3 +1,5 @@
-from browser_use.tools.service import Controller
+"""Controller exports for flight booking automation."""
 
-__all__ = ['Controller']
+from .service import Controller, Tool
+
+__all__ = ["Controller", "Tool"]
